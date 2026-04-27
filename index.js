@@ -1,6 +1,5 @@
 import express from 'express';
 import { Innertube, UniversalCache, Log } from 'youtubei.js';
-import vm from 'node:vm';
 
 Log.setLevel(Log.Level.NONE);
 
@@ -10,9 +9,6 @@ const PORT = process.env.PORT || 3000;
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
-
-// ✅ Attach VM globally (important)
-globalThis.vm = vm;
 
 // 🔹 Fetch helper
 async function fetchText(url) {
@@ -67,69 +63,9 @@ function format(sec) {
   return `${h}h ${m}m ${s}s`;
 }
 
-// 🔹 FAST session
-async function createFastSession() {
+// 🔹 Create session
+async function createSession() {
   return Innertube.create({
-    cache: new UniversalCache(false),
-    generate_session_locally: true
-  });
-}
-
-// 🔥 RELIABLE session (FIXED)
-async function createReliableSession() {
-  const { JSDOM } = await import("jsdom");
-  const { BG } = await import("bgutils-js");
-
-  const tmp = await Innertube.create({ retrieve_player: false });
-  const visitorData = tmp.session.context.client.visitorData;
-
-  // ✅ Create DOM (IMPORTANT — was missing before)
-  const dom = new JSDOM('<!DOCTYPE html><html></html>', {
-    url: "https://www.youtube.com/",
-    userAgent: UA
-  });
-
-  // ✅ Proper environment setup
-  globalThis.window = dom.window;
-  globalThis.document = dom.window.document;
-  globalThis.location = dom.window.location;
-
-  globalThis.self = globalThis;
-  globalThis.top = globalThis;
-  globalThis.parent = globalThis;
-  globalThis.global = globalThis;
-
-  // ✅ Attach VM correctly
-  globalThis.vm = vm;
-  globalThis.window.vm = vm;
-
-  const bgConfig = {
-    fetch,
-    globalObj: globalThis,
-    identifier: visitorData,
-    requestKey: "O43z0dpjhgX20SCx4KAo"
-  };
-
-  const challenge = await BG.Challenge.create(bgConfig);
-  if (!challenge) throw new Error("No challenge");
-
-  if (challenge.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue) {
-    new Function(
-      challenge.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue
-    )();
-  }
-
-  const poTokenResult = await BG.PoToken.generate({
-    program: challenge.program,
-    globalName: challenge.globalName,
-    bgConfig
-  });
-
-  if (!poTokenResult?.poToken) throw new Error("PoToken failed");
-
-  return Innertube.create({
-    po_token: poTokenResult.poToken,
-    visitor_data: visitorData,
     cache: new UniversalCache(false),
     generate_session_locally: true
   });
@@ -167,13 +103,12 @@ async function getDuration(yt, videoId) {
   return Math.floor((lastSq + 1) * targetDuration);
 }
 
-// 🔥 API ROUTE
+// 🔥 API
 app.get('/:videoId', async (req, res) => {
   const videoId = req.params.videoId;
 
   try {
-    // FAST
-    const yt = await createFastSession();
+    const yt = await createSession();
     const seconds = await getDuration(yt, videoId);
 
     return res.json({
@@ -181,36 +116,19 @@ app.get('/:videoId', async (req, res) => {
       seconds,
       minutes: Math.floor(seconds / 60),
       hours: Math.floor(seconds / 3600),
-      formatted: format(seconds),
-      mode: "FAST"
+      formatted: format(seconds)
     });
 
   } catch (err) {
-    try {
-      // POTOKEN fallback
-      const yt = await createReliableSession();
-      const seconds = await getDuration(yt, videoId);
-
-      return res.json({
-        videoId,
-        seconds,
-        minutes: Math.floor(seconds / 60),
-        hours: Math.floor(seconds / 3600),
-        formatted: format(seconds),
-        mode: "POTOKEN"
-      });
-
-    } catch (err2) {
-      return res.json({
-        status: "ERROR",
-        message: err2.message
-      });
-    }
+    return res.json({
+      status: "ERROR",
+      message: err.message
+    });
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('YT PRO API RUNNING 🚀');
+  res.send('YT HLS API (Stable Mode) ✅');
 });
 
 app.listen(PORT, () => {
