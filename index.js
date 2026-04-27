@@ -10,16 +10,37 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
-// 🔹 Fetch helper
-async function fetchText(url) {
-  const res = await fetch(url, {
-    headers: { "user-agent": UA }
+// 🔹 Custom fetch (acts like real browser)
+async function customFetch(input, init) {
+  return fetch(input, {
+    ...init,
+    headers: {
+      ...(init?.headers || {}),
+      "user-agent": UA,
+      "accept-language": "en-US,en;q=0.9",
+      "origin": "https://www.youtube.com",
+      "referer": "https://www.youtube.com/"
+    }
   });
+}
+
+// 🔹 Create session
+async function createSession() {
+  return Innertube.create({
+    cache: new UniversalCache(false),
+    generate_session_locally: true,
+    fetch: customFetch
+  });
+}
+
+// 🔹 Fetch text
+async function fetchText(url) {
+  const res = await customFetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 }
 
-// 🔹 Parse master playlist
+// 🔹 Parse HLS master
 function parseMaster(text, baseUrl) {
   const lines = text.split('\n');
   const variants = [];
@@ -35,7 +56,7 @@ function parseMaster(text, baseUrl) {
   return variants;
 }
 
-// 🔹 Parse media playlist
+// 🔹 Parse HLS media
 function parseMedia(text) {
   const lines = text.split('\n');
   let targetDuration = 0;
@@ -55,7 +76,14 @@ function parseMedia(text) {
   return { targetDuration, lastSq };
 }
 
-// 🔹 Format duration
+// 🔹 Parse DASH (simple)
+function parseDash(xml) {
+  const match = /mediaPresentationDuration="PT(\d+)S"/.exec(xml);
+  if (match) return parseInt(match[1]);
+  return null;
+}
+
+// 🔹 Format
 function format(sec) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
@@ -63,18 +91,18 @@ function format(sec) {
   return `${h}h ${m}m ${s}s`;
 }
 
-// 🔹 Create session
-async function createSession() {
-  return Innertube.create({
-    cache: new UniversalCache(false),
-    generate_session_locally: true
-  });
-}
-
-// 🔹 Get duration
+// 🔹 MAIN LOGIC
 async function getDuration(yt, videoId) {
   let info;
-  const clients = ["IOS", "ANDROID", "TV_EMBEDDED"];
+
+  const clients = [
+    "WEB",
+    "WEB_EMBEDDED_PLAYER",
+    "ANDROID_EMBEDDED_PLAYER",
+    "ANDROID",
+    "IOS",
+    "TV_EMBEDDED"
+  ];
 
   for (const client of clients) {
     try {
@@ -84,23 +112,43 @@ async function getDuration(yt, videoId) {
         parse: true
       });
 
-      if (info?.streaming_data?.hls_manifest_url) break;
+      if (info?.streaming_data) break;
     } catch {}
   }
 
-  const hls = info?.streaming_data?.hls_manifest_url;
-  if (!hls) throw new Error("NO_HLS");
+  const streaming = info?.streaming_data;
 
-  const master = await fetchText(hls);
-  const variants = parseMaster(master, hls);
-  if (!variants.length) throw new Error("NO_VARIANTS");
+  // 🔥 1. TRY HLS (LIVE BEST)
+  if (streaming?.hls_manifest_url) {
+    try {
+      const master = await fetchText(streaming.hls_manifest_url);
+      const variants = parseMaster(master, streaming.hls_manifest_url);
 
-  const media = await fetchText(variants[0]);
-  const { targetDuration, lastSq } = parseMedia(media);
+      if (variants.length) {
+        const media = await fetchText(variants[0]);
+        const { targetDuration, lastSq } = parseMedia(media);
 
-  if (!targetDuration || lastSq === null) throw new Error("PARSE_ERROR");
+        if (targetDuration && lastSq !== null) {
+          return Math.floor((lastSq + 1) * targetDuration);
+        }
+      }
+    } catch {}
+  }
 
-  return Math.floor((lastSq + 1) * targetDuration);
+  // 🔥 2. TRY DASH
+  if (streaming?.dash_manifest_url) {
+    try {
+      const xml = await fetchText(streaming.dash_manifest_url);
+      const seconds = parseDash(xml);
+      if (seconds) return seconds;
+    } catch {}
+  }
+
+  // 🔥 3. FALLBACK (VOD)
+  const fallback = parseInt(info?.video_details?.length_seconds || 0);
+  if (fallback) return fallback;
+
+  throw new Error("NO_DURATION");
 }
 
 // 🔥 API
@@ -128,7 +176,7 @@ app.get('/:videoId', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('YT HLS API (Stable Mode) ✅');
+  res.send('YT HLS + DASH API (Stable) 🚀');
 });
 
 app.listen(PORT, () => {
