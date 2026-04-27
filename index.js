@@ -11,7 +11,7 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
-// 🔥 Fix VM issue
+// ✅ Attach VM globally (important)
 globalThis.vm = vm;
 
 // 🔹 Fetch helper
@@ -75,7 +75,7 @@ async function createFastSession() {
   });
 }
 
-// 🔹 RELIABLE session (PoToken)
+// 🔥 RELIABLE session (FIXED)
 async function createReliableSession() {
   const { JSDOM } = await import("jsdom");
   const { BG } = await import("bgutils-js");
@@ -83,12 +83,13 @@ async function createReliableSession() {
   const tmp = await Innertube.create({ retrieve_player: false });
   const visitorData = tmp.session.context.client.visitorData;
 
+  // ✅ Create DOM (IMPORTANT — was missing before)
   const dom = new JSDOM('<!DOCTYPE html><html></html>', {
     url: "https://www.youtube.com/",
     userAgent: UA
   });
 
-  // 🔥 FULL ENV FIX
+  // ✅ Proper environment setup
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   globalThis.location = dom.window.location;
@@ -97,6 +98,10 @@ async function createReliableSession() {
   globalThis.top = globalThis;
   globalThis.parent = globalThis;
   globalThis.global = globalThis;
+
+  // ✅ Attach VM correctly
+  globalThis.vm = vm;
+  globalThis.window.vm = vm;
 
   const bgConfig = {
     fetch,
@@ -130,7 +135,7 @@ async function createReliableSession() {
   });
 }
 
-// 🔹 Get duration via HLS
+// 🔹 Get duration
 async function getDuration(yt, videoId) {
   let info;
   const clients = ["IOS", "ANDROID", "TV_EMBEDDED"];
@@ -167,7 +172,7 @@ app.get('/:videoId', async (req, res) => {
   const videoId = req.params.videoId;
 
   try {
-    // ⚡ Fast attempt
+    // FAST
     const yt = await createFastSession();
     const seconds = await getDuration(yt, videoId);
 
@@ -182,7 +187,7 @@ app.get('/:videoId', async (req, res) => {
 
   } catch (err) {
     try {
-      // 🔥 Fallback PoToken
+      // POTOKEN fallback
       const yt = await createReliableSession();
       const seconds = await getDuration(yt, videoId);
 
@@ -205,7 +210,7 @@ app.get('/:videoId', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('PRO YT HLS API RUNNING 🚀');
+  res.send('YT PRO API RUNNING 🚀');
 });
 
 app.listen(PORT, () => {
