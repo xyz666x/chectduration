@@ -1,5 +1,6 @@
 import express from 'express';
 import { Innertube, UniversalCache, Log } from 'youtubei.js';
+import vm from 'node:vm';
 
 Log.setLevel(Log.Level.NONE);
 
@@ -10,7 +11,10 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
-// 🔹 Fetch text
+// 🔥 Fix VM issue
+globalThis.vm = vm;
+
+// 🔹 Fetch helper
 async function fetchText(url) {
   const res = await fetch(url, {
     headers: { "user-agent": UA }
@@ -19,7 +23,7 @@ async function fetchText(url) {
   return res.text();
 }
 
-// 🔹 Parse master
+// 🔹 Parse master playlist
 function parseMaster(text, baseUrl) {
   const lines = text.split('\n');
   const variants = [];
@@ -35,7 +39,7 @@ function parseMaster(text, baseUrl) {
   return variants;
 }
 
-// 🔹 Parse media
+// 🔹 Parse media playlist
 function parseMedia(text) {
   const lines = text.split('\n');
   let targetDuration = 0;
@@ -55,7 +59,7 @@ function parseMedia(text) {
   return { targetDuration, lastSq };
 }
 
-// 🔹 Format
+// 🔹 Format duration
 function format(sec) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
@@ -84,40 +88,49 @@ async function createReliableSession() {
     userAgent: UA
   });
 
-  Object.assign(globalThis, {
-    window: dom.window,
-    document: dom.window.document,
-    location: dom.window.location
-  });
+  // 🔥 FULL ENV FIX
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.location = dom.window.location;
 
-  const challenge = await BG.Challenge.create({
+  globalThis.self = globalThis;
+  globalThis.top = globalThis;
+  globalThis.parent = globalThis;
+  globalThis.global = globalThis;
+
+  const bgConfig = {
     fetch,
     globalObj: globalThis,
     identifier: visitorData,
     requestKey: "O43z0dpjhgX20SCx4KAo"
-  });
+  };
 
-  if (challenge?.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue) {
+  const challenge = await BG.Challenge.create(bgConfig);
+  if (!challenge) throw new Error("No challenge");
+
+  if (challenge.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue) {
     new Function(
       challenge.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue
     )();
   }
 
-  const poToken = await BG.PoToken.generate({
+  const poTokenResult = await BG.PoToken.generate({
     program: challenge.program,
     globalName: challenge.globalName,
-    bgConfig: { fetch, globalObj: globalThis }
+    bgConfig
   });
 
+  if (!poTokenResult?.poToken) throw new Error("PoToken failed");
+
   return Innertube.create({
-    po_token: poToken.poToken,
+    po_token: poTokenResult.poToken,
     visitor_data: visitorData,
     cache: new UniversalCache(false),
     generate_session_locally: true
   });
 }
 
-// 🔥 CORE FUNCTION
+// 🔹 Get duration via HLS
 async function getDuration(yt, videoId) {
   let info;
   const clients = ["IOS", "ANDROID", "TV_EMBEDDED"];
@@ -131,7 +144,6 @@ async function getDuration(yt, videoId) {
       });
 
       if (info?.streaming_data?.hls_manifest_url) break;
-
     } catch {}
   }
 
@@ -140,7 +152,6 @@ async function getDuration(yt, videoId) {
 
   const master = await fetchText(hls);
   const variants = parseMaster(master, hls);
-
   if (!variants.length) throw new Error("NO_VARIANTS");
 
   const media = await fetchText(variants[0]);
@@ -156,6 +167,7 @@ app.get('/:videoId', async (req, res) => {
   const videoId = req.params.videoId;
 
   try {
+    // ⚡ Fast attempt
     const yt = await createFastSession();
     const seconds = await getDuration(yt, videoId);
 
@@ -164,12 +176,13 @@ app.get('/:videoId', async (req, res) => {
       seconds,
       minutes: Math.floor(seconds / 60),
       hours: Math.floor(seconds / 3600),
-      formatted: format(seconds)
+      formatted: format(seconds),
+      mode: "FAST"
     });
 
   } catch (err) {
     try {
-      // 🔥 fallback to PoToken
+      // 🔥 Fallback PoToken
       const yt = await createReliableSession();
       const seconds = await getDuration(yt, videoId);
 
@@ -179,7 +192,7 @@ app.get('/:videoId', async (req, res) => {
         minutes: Math.floor(seconds / 60),
         hours: Math.floor(seconds / 3600),
         formatted: format(seconds),
-        mode: "PoToken"
+        mode: "POTOKEN"
       });
 
     } catch (err2) {
@@ -192,7 +205,7 @@ app.get('/:videoId', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('PRO YT API (PoToken + HLS) 🚀');
+  res.send('PRO YT HLS API RUNNING 🚀');
 });
 
 app.listen(PORT, () => {
